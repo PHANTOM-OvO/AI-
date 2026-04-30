@@ -1,0 +1,57 @@
+import streamlit as st
+from typing import TypedDict, List
+from langgraph.graph import StateGraph, END
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage, SystemMessage
+
+# 定义 Agent 状态
+class AgentState(TypedDict):
+    code: str
+    review_report: str
+    fix_attempts: int
+    status: str
+
+# 1. Reviewer 节点
+def reviewer_node(state: AgentState):
+    llm = ChatOpenAI(model="gpt-4o", api_key=st.session_state.api_key, temperature=0)
+    prompt = f"你是一名安全专家。请审查此代码。若没问题回复'CLEAR'，有漏洞请详细列出：\n{state['code']}"
+    res = llm.invoke([SystemMessage(content="你负责代码安全审计"), HumanMessage(content=prompt)])
+    status = "clean" if "CLEAR" in res.content else "dirty"
+    return {"review_report": res.content, "status": status}
+
+# 2. Fixer 节点
+def fixer_node(state: AgentState):
+    llm = ChatOpenAI(model="gpt-4o", api_key=st.session_state.api_key, temperature=0)
+    prompt = f"请根据审查报告修复代码。只输出修复后的代码，不要解释：\n报告：{state['review_report']}\n原代码：{state['code']}"
+    res = llm.invoke([SystemMessage(content="你负责自动化修复代码"), HumanMessage(content=prompt)])
+    return {"code": res.content, "fix_attempts": state['fix_attempts'] + 1, "status": "fixed"}
+
+# Streamlit UI
+st.set_page_config(page_title="Auto-CodeGuard Demo", layout="wide")
+st.title("🛡️ Auto-CodeGuard: 多 Agent 协作流演示")
+
+with st.sidebar:
+    api_key = st.text_input("OpenAI API Key", type="password")
+    st.session_state.api_key = api_key
+
+col1, col2 = st.columns(2)
+with col1:
+    input_code = st.text_area("输入待测代码:", value='def db_query(id):\n    return f"SELECT * FROM users WHERE id={id}"', height=200)
+    if st.button("开始自动化工作流", type="primary"):
+        if not api_key: st.error("请填入 Key")
+        else:
+            # 构建 LangGraph 工作流
+            workflow = StateGraph(AgentState)
+            workflow.add_node("reviewer", reviewer_node)
+            workflow.add_node("fixer", fixer_node)
+            workflow.set_entry_point("reviewer")
+            workflow.add_conditional_edges("reviewer", lambda x: "end" if x["status"] == "clean" else "fix", {"end": END, "fix": "fixer"})
+            workflow.add_edge("fixer", "reviewer")
+            app = workflow.compile()
+            
+            with col2:
+                for output in app.stream({"code": input_code, "fix_attempts": 0, "status": "init"}):
+                    for node, state in output.items():
+                        with st.expander(f"Agent: {node.upper()}"):
+                            if "review_report" in state: st.write(state["review_report"])
+                            if "code" in state: st.code(state["code"])

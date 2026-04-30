@@ -16,3 +16,5 @@ Auto-CodeGuard 是一个基于 **LangGraph** 构建的多智能体（Multi-Agent
 1. **安装依赖**:
    ```bash
    pip install -r requirements.txt
+2.启动
+streamlit run app.py
